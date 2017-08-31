@@ -1,0 +1,74 @@
+== README
+
+This simple application demonstrates a problem with PG array columns using decimals.
+
+== SETUP
+
+You need to set up your local PostgreSQL database.
+Use rake db:create and then rake db:migrate or whatever you prefer.
+
+== TEST
+
+Run the specs (rspec or just rake)
+
+== PROBLEM
+
+As you can see there is a simple model Sample with just an array column value of type <tt>decimal(18,6)</tt>
+With an existing record you can do this:
+
+    2.3.3 :001 > Sample.first
+      Sample Load (0.6ms)  SELECT  "samples".* FROM "samples"  ORDER BY "samples"."id" ASC LIMIT 1
+     => #<Sample id: 1, name: "foo", value: [#<BigDecimal:7f8352a74f68,'0.12E1',18(27)>, #<BigDecimal:7f8352a74d10,'0.3E1',9(18)>]>
+    2.3.3 :002 > _.changes
+     => {"value"=>[[#<BigDecimal:7f8352a5f3c0,'0.12E1',18(27)>, #<BigDecimal:7f8352a5f190,'0.3E1',9(18)>], [#<    BigDecimal:7f8352a74f68,'0.12E1',18(27)>, #<BigDecimal:7f8352a74d10,'0.3E1',9(18)>]]}
+    2.3.3 :003 >
+
+Well, not good, right?
+
+== REASON
+
+In <tt>ActiveRecord::AttributeMethods::Dirty#attribute_changed_in_place?</tt> is called to figure out if a changed was made for the
+array column. That method gets passed the old raw value - for an array column with decimals as above this would be a string
+like <tt>'{1.000000,2.340000}'</tt>.
+
+Then this call gets forwarded to <tt>ActiveRecord::ConnectionAdapters::PostgreSQL::OID::Array#type_cast_for_database</tt> which uses
+<tt>#cast_value_for_database</tt> to do the job. The code for the latter method is shown below.
+
+    def cast_value_for_database(value)
+      if value.is_a?(::Array)
+        casted_values = value.map { |item| cast_value_for_database(item) }
+        "{#{casted_values.join(delimiter)}}"
+      else
+        quote_and_escape(subtype.type_cast_for_database(value))
+      end
+    end
+
+Here's where the problem lies. This iteratest the provided value (which is an array) and calls itself for each element. That in
+turn delegates the task to the subtype. Looking at the <tt>decimal</tt> subtype, this returns a <tt>BigDecimal</tt> for each value. Back in the loop above, this is turned to a delimited string.
+
+    2.3.3 :005 > '1.0'.to_d.to_s
+     => "1.0"
+
+And since the casted value for database of a numeric (decimal) value is a BigDecimal, when turned to string all the decimal places
+(scale) are lost. And so the final "array-value" to compare against the former raw_value of <tt>'{1.000000,2.340000}'</tt> would simply be <tt>'{1.0,2.34}'</tt> which of course is different and so AR considers the attribute to be changed.
+
+== POSSIBLE FIXES
+
+Maybe the the case_value_for_database could check if a subtype implements a specific method like <tt>type_cast_for_database_array</tt> which is applied within the loop. and so every type could implement different logic when used within an array. But I guess you guys might figure out the right way to take care of this.
+
+    def cast_value_for_database(value)
+      if value.is_a?(::Array)
+        casted_values = value.map do |item|
+          value = cast_value_for_database(item)
+          if subtype.respond_to?(:type_cast_for_database_array)
+            subtype.type_cast_for_database_array(value)
+          else
+            value
+          end
+        end
+        "{#{casted_values.join(delimiter)}}"
+      else
+        quote_and_escape(subtype.type_cast_for_database(value))
+      end
+    end
+
