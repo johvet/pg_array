@@ -75,7 +75,7 @@ Maybe the the case_value_for_database could check if a subtype implements a spec
 And then, <tt>ActiveRecord::Type::Decimal</tt> could have something like the following.
 
     def type_cast_for_database_array(casted_value)
-      if scale
+      if scale && casted_value.is_a?(BigDecimal)
         sprintf("%.#{scale}f", casted_value)
       else
         casted_value
