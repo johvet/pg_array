@@ -4,7 +4,7 @@ This simple application demonstrates a problem with PG array columns using decim
 
 == SETUP
 
-You need to set up your local PostgreSQL database.
+You need to set up your local PostgreSQL database and adjust the config/database.yml accordingly.
 Use rake db:create and then rake db:migrate or whatever you prefer.
 
 == TEST
